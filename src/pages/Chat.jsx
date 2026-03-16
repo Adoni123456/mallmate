@@ -12,7 +12,6 @@ import config from "../config";
 
 const db = getFirestore();
 
-// ── SVG Icons ──
 const SendIcon    = () => <svg className="icon icon-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor" stroke="none"/></svg>;
 const MicIcon     = () => <svg className="icon icon-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>;
 const MicOffIcon  = () => <svg className="icon icon-20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 005.12 2.12M15 9.34V4a3 3 0 00-5.94-.6"/><path d="M17 16.95A7 7 0 015 12v-2m14 0v2a7 7 0 01-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>;
@@ -25,7 +24,6 @@ const PinIcon     = () => <svg className="icon icon-14" viewBox="0 0 24 24" fill
 const BotIcon     = () => <svg className="icon icon-28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><circle cx="8" cy="16" r="1" fill="currentColor"/><circle cx="16" cy="16" r="1" fill="currentColor"/></svg>;
 const HistoryIcon = () => <svg className="icon icon-13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><polyline points="12 8 12 12 14 14"/><path d="M3.05 11a9 9 0 100 2"/><polyline points="1 4 1 8 5 8"/><path d="M3.05 11L1 8"/></svg>;
 
-// ── Firestore helpers ──
 const todayKey = () => new Date().toISOString().slice(0, 10);
 
 async function loadLastSession() {
@@ -67,7 +65,6 @@ async function clearHistory() {
   } catch {}
 }
 
-// ── Component ──
 export default function Chat() {
   const [messages,   setMessages]   = useState([]);
   const [input,      setInput]      = useState("");
@@ -75,6 +72,7 @@ export default function Chat() {
   const [listening,  setListening]  = useState(false);
   const [histLoaded, setHistLoaded] = useState(false);
   const [voiceOk,    setVoiceOk]    = useState(false);
+  const [debugMsg,   setDebugMsg]   = useState(""); // TEMP debug
 
   const navigate  = useNavigate();
   const bottomRef = useRef(null);
@@ -84,7 +82,6 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // Load today's session
   useEffect(() => {
     setHistLoaded(true);
     loadLastSession().then(msgs => {
@@ -92,7 +89,6 @@ export default function Chat() {
     });
   }, []);
 
-  // Voice setup
   useEffect(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
@@ -124,8 +120,8 @@ export default function Chat() {
     const text = (textOverride ?? input).trim().slice(0, 300);
     if (!text || loading) return;
     setInput("");
+    setDebugMsg(""); // clear debug
 
-    // Guard: make sure user is logged in
     if (!getAuth().currentUser) {
       setMessages(prev => [...prev, {
         id: Date.now(), role: "assistant",
@@ -144,18 +140,28 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      const token = await getAuth().currentUser?.getIdToken();
-      const res   = await fetch(config.API_URL + "/chat", {
+      // TEMP: show debug info on screen for mobile testing
+      let token = null;
+      try {
+        token = await getAuth().currentUser?.getIdToken();
+      } catch(tokenErr) {
+        setDebugMsg("Token error: " + tokenErr.message);
+      }
+
+      setDebugMsg("Calling: " + config.API_URL + " | token: " + (token ? "yes" : "no"));
+
+      const res = await fetch(config.API_URL + "/chat", {
         method: "POST",
         headers: {
-          "Content-Type":                "application/json",
-          "ngrok-skip-browser-warning":  "true",          // FIX: ngrok CORS
+          "Content-Type":               "application/json",
+          "ngrok-skip-browser-warning": "true",
           ...(token && { "Authorization": "Bearer " + token }),
         },
         body: JSON.stringify({ message: text }),
       });
 
-      // FIX: handle 401 gracefully
+      setDebugMsg("Status: " + res.status);
+
       if (res.status === 401) {
         setMessages(prev => [...prev, {
           id: Date.now() + 1, role: "assistant",
@@ -167,11 +173,13 @@ export default function Chat() {
         return;
       }
 
-      const data   = await res.json();
+      const data = await res.json();
+      setDebugMsg(""); // clear on success
+
       const botMsg = {
         id:      Date.now() + 1,
         role:    "assistant",
-        content: data.text,
+        content: data.text || "No response",
         items:   data.items   || [],
         offers:  data.offers  || [],
         places:  data.places  || [],
@@ -179,13 +187,16 @@ export default function Chat() {
       };
       setMessages(prev => [...prev, botMsg]);
       saveMessage(botMsg);
-    } catch {
-      const err = {
+
+    } catch(err) {
+      // TEMP: show exact error on screen so we can see it on mobile
+      const errMsg = err?.message || String(err);
+      setDebugMsg("ERROR: " + errMsg);
+      setMessages(prev => [...prev, {
         id: Date.now() + 1, role: "assistant",
-        content: "Server error. Please try again.",
+        content: "Error: " + errMsg,
         items: [], offers: [], places: [], actions: [],
-      };
-      setMessages(prev => [...prev, err]);
+      }]);
     }
     setLoading(false);
   };
@@ -202,7 +213,6 @@ export default function Chat() {
   return (
     <div className="chat-wrapper">
 
-      {/* Header */}
       <div className="chat-header">
         <div className="header-brand">
           <div className="header-logo"><ShopIcon/></div>
@@ -220,14 +230,23 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* History banner */}
+      {/* TEMP: debug bar — shows error details on screen */}
+      {debugMsg && (
+        <div style={{
+          background:"#1a0000", color:"#fca5a5",
+          fontSize:"11px", padding:"6px 12px",
+          wordBreak:"break-all", flexShrink:0
+        }}>
+          {debugMsg}
+        </div>
+      )}
+
       {histLoaded && messages.length > 0 && (
         <div className="history-banner">
           <HistoryIcon/> Restored from today's session
         </div>
       )}
 
-      {/* Messages */}
       <div className="chat-body">
 
         {messages.length === 0 && histLoaded && (
@@ -316,7 +335,6 @@ export default function Chat() {
         <div ref={bottomRef}/>
       </div>
 
-      {/* Input bar */}
       <div className="chat-input">
         <input
           value={input}
