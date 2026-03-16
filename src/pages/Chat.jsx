@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { signOut, getAuth } from "firebase/auth";
+import { signOut, getAuth, onAuthStateChanged } from "firebase/auth";
 import { auth } from "../firebase";
 import {
   getFirestore, collection, doc,
@@ -72,11 +72,22 @@ export default function Chat() {
   const [listening,  setListening]  = useState(false);
   const [histLoaded, setHistLoaded] = useState(false);
   const [voiceOk,    setVoiceOk]    = useState(false);
-  const [debugMsg,   setDebugMsg]   = useState(""); // TEMP debug
 
-  const navigate  = useNavigate();
-  const bottomRef = useRef(null);
-  const recognRef = useRef(null);
+  const navigate       = useNavigate();
+  const bottomRef      = useRef(null);
+  const recognRef      = useRef(null);
+  // PERMANENT FIX: store user in ref so it's always available
+  // getAuth().currentUser can be null on mobile during initialization
+  // onAuthStateChanged fires reliably on all devices
+  const currentUserRef = useRef(null);
+
+  // Keep ref in sync with Firebase auth — fires immediately on mount
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, user => {
+      currentUserRef.current = user;
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -120,16 +131,6 @@ export default function Chat() {
     const text = (textOverride ?? input).trim().slice(0, 300);
     if (!text || loading) return;
     setInput("");
-    setDebugMsg(""); // clear debug
-
-    if (!getAuth().currentUser) {
-      setMessages(prev => [...prev, {
-        id: Date.now(), role: "assistant",
-        content: "Session expired. Please log in again.",
-        items: [], offers: [], places: [], actions: [],
-      }]);
-      return;
-    }
 
     const userMsg = {
       id: Date.now(), role: "user", content: text,
@@ -140,15 +141,8 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      // TEMP: show debug info on screen for mobile testing
-      let token = null;
-      try {
-        token = await getAuth().currentUser?.getIdToken();
-      } catch(tokenErr) {
-        setDebugMsg("Token error: " + tokenErr.message);
-      }
-
-      setDebugMsg("Calling: " + config.API_URL + " | token: " + (token ? "yes" : "no"));
+      // Use ref — always has latest user, no timing issues on mobile
+      const token = await currentUserRef.current?.getIdToken().catch(() => null);
 
       const res = await fetch(config.API_URL + "/chat", {
         method: "POST",
@@ -159,8 +153,6 @@ export default function Chat() {
         },
         body: JSON.stringify({ message: text }),
       });
-
-      setDebugMsg("Status: " + res.status);
 
       if (res.status === 401) {
         setMessages(prev => [...prev, {
@@ -173,9 +165,7 @@ export default function Chat() {
         return;
       }
 
-      const data = await res.json();
-      setDebugMsg(""); // clear on success
-
+      const data   = await res.json();
       const botMsg = {
         id:      Date.now() + 1,
         role:    "assistant",
@@ -189,12 +179,9 @@ export default function Chat() {
       saveMessage(botMsg);
 
     } catch(err) {
-      // TEMP: show exact error on screen so we can see it on mobile
-      const errMsg = err?.message || String(err);
-      setDebugMsg("ERROR: " + errMsg);
       setMessages(prev => [...prev, {
         id: Date.now() + 1, role: "assistant",
-        content: "Error: " + errMsg,
+        content: "Could not reach server. Check your connection.",
         items: [], offers: [], places: [], actions: [],
       }]);
     }
@@ -229,17 +216,6 @@ export default function Chat() {
           </button>
         </div>
       </div>
-
-      {/* TEMP: debug bar — shows error details on screen */}
-      {debugMsg && (
-        <div style={{
-          background:"#1a0000", color:"#fca5a5",
-          fontSize:"11px", padding:"6px 12px",
-          wordBreak:"break-all", flexShrink:0
-        }}>
-          {debugMsg}
-        </div>
-      )}
 
       {histLoaded && messages.length > 0 && (
         <div className="history-banner">
