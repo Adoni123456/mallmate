@@ -4,10 +4,10 @@ import { getAuth } from "firebase/auth";
 import "./Navigation.css";
 import config from "../config";
 
-const API            = config.API_URL;
-const SVG_SCALE      = 0.06;
-const AVG_STEP_M     = 0.75;
-const ACCEL_THRESH   = 1.5;
+const API               = config.API_URL;
+const SVG_SCALE         = 0.10;   // FIX: 1 SVG unit = 10cm (was 0.06)
+const AVG_STEP_M        = 0.75;
+const ACCEL_THRESH      = 1.5;
 const CALIBRATION_STEPS = 10;
 
 const FALLBACK_NODES = {
@@ -33,14 +33,14 @@ const PLACE_TO_NODE = {
 };
 
 const MANUAL_NODES = [
-  { id: "NODE_S3",     label: "Front Entrance" },
-  { id: "NODE_BACK",   label: "Back Entrance"  },
-  { id: "NODE_TECH",   label: "Tech Zone"      },
-  { id: "NODE_FASHION",label: "Fashion Hub"    },
-  { id: "NODE_FOOD",   label: "Food Court"     },
-  { id: "NODE_SHOE",   label: "Shoe World"     },
-  { id: "NODE_SUPER",  label: "Super Mart"     },
-  { id: "NODE_LIFT",   label: "Lift"           },
+  { id: "NODE_S3",      label: "Front Entrance" },
+  { id: "NODE_BACK",    label: "Back Entrance"  },
+  { id: "NODE_TECH",    label: "Tech Zone"      },
+  { id: "NODE_FASHION", label: "Fashion Hub"    },
+  { id: "NODE_FOOD",    label: "Food Court"     },
+  { id: "NODE_SHOE",    label: "Shoe World"     },
+  { id: "NODE_SUPER",   label: "Super Mart"     },
+  { id: "NODE_LIFT",    label: "Lift"           },
 ];
 
 const NODE_LABELS = {
@@ -51,7 +51,7 @@ const NODE_LABELS = {
   NODE_S3: "Front Entrance", NODE_BACK: "Back Entrance",
 };
 
-// ── Helpers ──
+// ── Geometry helpers ──────────────────────────────────────────────
 function svgDist(nodes, a, b) {
   const [x1, y1] = nodes[a] || [0, 0];
   const [x2, y2] = nodes[b] || [0, 0];
@@ -90,12 +90,16 @@ function buildPathD(nodes, path, progress) {
   return { full, done };
 }
 
+// FIX: auth headers + ngrok header for all fetch calls
 async function getAuthHeaders() {
   const token = await getAuth().currentUser?.getIdToken().catch(() => null);
-  return token ? { Authorization: "Bearer " + token } : {};
+  return {
+    "ngrok-skip-browser-warning": "true",
+    ...(token ? { "Authorization": "Bearer " + token } : {}),
+  };
 }
 
-// ══════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 export default function Navigation() {
   const routerLoc = useLocation();
   const navigate  = useNavigate();
@@ -147,21 +151,21 @@ export default function Navigation() {
         .then(d => {
           if (cancelled || !d.nodes) return;
           const m = {};
-          Object.entries(d.nodes).forEach(function(entry) { m[entry[0]] = [entry[1].x, entry[1].y]; });
+          Object.entries(d.nodes).forEach(([k, v]) => { m[k] = [v.x, v.y]; });
           setNodeMap(m);
-        }).catch(function() {});
+        }).catch(() => {});
       fetch(API + "/map?v=" + Date.now(), { headers: h })
         .then(r => r.text())
         .then(s => { if (!cancelled) setMapSvg(s); })
-        .catch(function() {});
+        .catch(() => {});
     })();
-    return function() { cancelled = true; };
+    return () => { cancelled = true; };
   }, []);
 
-  // QR helpers — defined before useEffect that calls openQR
-  const closeQR = useCallback(function() {
+  // QR helpers
+  const closeQR = useCallback(() => {
     if (qrStreamRef.current) {
-      qrStreamRef.current.getTracks().forEach(function(t) { t.stop(); });
+      qrStreamRef.current.getTracks().forEach(t => t.stop());
       qrStreamRef.current = null;
     }
     if (scannerRef.current) cancelAnimationFrame(scannerRef.current);
@@ -169,7 +173,7 @@ export default function Navigation() {
     setJunctionNudge(false);
   }, []);
 
-  const handleQRResult = useCallback(function(raw) {
+  const handleQRResult = useCallback((raw) => {
     closeQR();
     let nodeId = raw.trim();
     if (raw.startsWith("MALLMATE:")) nodeId = raw.split(":")[1];
@@ -187,10 +191,10 @@ export default function Navigation() {
     }
   }, [closeQR]);
 
-  const startBarcode = useCallback(function() {
+  const startBarcode = useCallback(() => {
     if (!("BarcodeDetector" in window)) return;
     const det = new BarcodeDetector({ formats: ["qr_code"] });
-    const scan = async function() {
+    const scan = async () => {
       if (!videoRef.current) return;
       try {
         const codes = await det.detect(videoRef.current);
@@ -201,15 +205,15 @@ export default function Navigation() {
     scannerRef.current = requestAnimationFrame(scan);
   }, [handleQRResult]);
 
-  const openQR = useCallback(async function() {
+  const openQR = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       qrStreamRef.current = stream;
       setScanMode("scanning");
-      setTimeout(function() {
+      setTimeout(() => {
         if (videoRef.current && qrStreamRef.current) {
           videoRef.current.srcObject = qrStreamRef.current;
-          videoRef.current.play().catch(function() {});
+          videoRef.current.play().catch(() => {});
           startBarcode();
         }
       }, 400);
@@ -219,27 +223,30 @@ export default function Navigation() {
   }, [startBarcode]);
 
   // Get destination from chat
-  useEffect(function() {
+  useEffect(() => {
     const state = routerLoc.state;
     if (state && state.nodeId) {
       setToNode(PLACE_TO_NODE[state.nodeId] || state.nodeId);
-      const t = setTimeout(function() { openQR(); }, 400);
-      return function() { clearTimeout(t); };
+      const t = setTimeout(() => openQR(), 400);
+      return () => clearTimeout(t);
     }
   }, [routerLoc.state, openQR]);
 
   // Fetch path
-  useEffect(function() {
+  useEffect(() => {
     if (!fromNode || !toNode || fromNode === toNode) return;
     let cancelled = false;
-    (async function() {
+    (async () => {
       setLoading(true); setError(null); setNavData(null);
       setProgress(0); setCurrentSeg(0); setArrived(false);
       stepsInSegRef.current = 0;
       try {
         const h   = await getAuthHeaders();
-        const res = await fetch(API + "/navigate?from_node=" + fromNode + "&to_node=" + toNode, { headers: h });
-        const d   = await res.json();
+        const res = await fetch(
+          API + "/navigate?from_node=" + fromNode + "&to_node=" + toNode,
+          { headers: h }
+        );
+        const d = await res.json();
         if (cancelled) return;
         if (d.error) { setError(d.error); return; }
         setNavData(d);
@@ -249,11 +256,11 @@ export default function Navigation() {
         if (!cancelled) setLoading(false);
       }
     })();
-    return function() { cancelled = true; };
+    return () => { cancelled = true; };
   }, [fromNode, toNode]);
 
-  // Motion handler (refs only — stable, no stale closures)
-  const onMotion = useCallback(function(e) {
+  // Motion handler (reads everything from refs — no stale closures)
+  const onMotion = useCallback((e) => {
     const acc = e.accelerationIncludingGravity;
     if (!acc) return;
     const x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
@@ -262,12 +269,12 @@ export default function Navigation() {
     lastAccelRef.current = { x, y, z };
     stepBufRef.current.push(delta);
     if (stepBufRef.current.length > 4) stepBufRef.current.shift();
-    const avg = stepBufRef.current.reduce(function(a, b) { return a + b; }, 0) / stepBufRef.current.length;
+    const avg = stepBufRef.current.reduce((a, b) => a + b, 0) / stepBufRef.current.length;
     if (avg <= ACCEL_THRESH) return;
 
     if (calibratingRef.current) {
       calibAccRef.current++;
-      setCalibSteps(function(c) { return c + 1; });
+      setCalibSteps(c => c + 1);
       return;
     }
 
@@ -275,7 +282,7 @@ export default function Navigation() {
     if (!data) return;
     stepsInSegRef.current++;
 
-    setCurrentSeg(function(seg) {
+    setCurrentSeg(seg => {
       const path = data.path;
       if (seg >= path.length - 1) { setArrived(true); return seg; }
       const needed  = stepsFor(nodeMapRef.current, path[seg], path[seg + 1], stepLenRef.current);
@@ -300,40 +307,42 @@ export default function Navigation() {
     });
   }, []);
 
-  const attachMotion = useCallback(function(forCalib) {
-    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+  const attachMotion = useCallback((forCalib) => {
+    if (typeof DeviceMotionEvent !== "undefined" &&
+        typeof DeviceMotionEvent.requestPermission === "function") {
       DeviceMotionEvent.requestPermission()
-        .then(function(p) { if (p === "granted") window.addEventListener("devicemotion", onMotion); })
-        .catch(function() {});
+        .then(p => { if (p === "granted") window.addEventListener("devicemotion", onMotion); })
+        .catch(() => {});
     } else {
       window.addEventListener("devicemotion", onMotion);
     }
     if (!forCalib) setTracking(true);
   }, [onMotion]);
 
-  const detachMotion = useCallback(function() {
+  const detachMotion = useCallback(() => {
     window.removeEventListener("devicemotion", onMotion);
     setTracking(false);
   }, [onMotion]);
 
-  useEffect(function() {
-    return function() {
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
       detachMotion();
       if (qrStreamRef.current) {
-        qrStreamRef.current.getTracks().forEach(function(t) { t.stop(); });
+        qrStreamRef.current.getTracks().forEach(t => t.stop());
         qrStreamRef.current = null;
       }
     };
   }, [detachMotion]);
 
-  const startCalibration = useCallback(function() {
+  const startCalibration = useCallback(() => {
     calibAccRef.current = 0;
     setCalibSteps(0);
     setCalibrating(true);
     attachMotion(true);
   }, [attachMotion]);
 
-  const finishCalibration = useCallback(function() {
+  const finishCalibration = useCallback(() => {
     const newLen = calibAccRef.current > 0
       ? Math.min(Math.max((CALIBRATION_STEPS * AVG_STEP_M) / calibAccRef.current, 0.4), 1.2)
       : AVG_STEP_M;
@@ -343,6 +352,7 @@ export default function Navigation() {
     detachMotion();
   }, [detachMotion]);
 
+  // Derived values
   const path      = navData ? navData.path : [];
   const paths     = buildPathD(nodeMap, path, progress);
   const animPos   = interpolate(nodeMap, path, progress);
@@ -354,8 +364,9 @@ export default function Navigation() {
     <div className="nav-wrapper">
 
       <div className="nav-header">
-        <button className="nav-back-btn" onClick={function() { detachMotion(); navigate(-1); }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <button className="nav-back-btn" onClick={() => { detachMotion(); navigate(-1); }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6"/>
           </svg>
         </button>
@@ -363,6 +374,7 @@ export default function Navigation() {
         <div style={{ width: 40 }}/>
       </div>
 
+      {/* Calibration overlay */}
       {calibrating && (
         <div className="calib-overlay">
           <div className="calib-card">
@@ -378,6 +390,7 @@ export default function Navigation() {
         </div>
       )}
 
+      {/* QR / Manual overlay */}
       {(scanMode === "scanning" || scanMode === "manual") && (
         <div className="qr-overlay">
           <div className="qr-sheet">
@@ -393,7 +406,7 @@ export default function Navigation() {
                   <div className="qr-corner bl"/><div className="qr-corner br"/>
                 </div>
                 <p className="qr-hint">Point at QR code near shop entrance or junction</p>
-                <button className="qr-manual-btn" onClick={function() { setScanMode("manual"); }}>
+                <button className="qr-manual-btn" onClick={() => setScanMode("manual")}>
                   Can't scan? Select manually
                 </button>
               </>
@@ -401,37 +414,37 @@ export default function Navigation() {
             {scanMode === "manual" && (
               <div className="manual-grid">
                 <p className="manual-hint">Select your current location:</p>
-                {MANUAL_NODES.map(function(n) {
-                  return (
-                    <button key={n.id} className="manual-node-btn"
-                      onClick={function() { handleQRResult(n.id); }}>
-                      {n.label}
-                    </button>
-                  );
-                })}
+                {MANUAL_NODES.map(n => (
+                  <button key={n.id} className="manual-node-btn"
+                    onClick={() => handleQRResult(n.id)}>
+                    {n.label}
+                  </button>
+                ))}
               </div>
             )}
           </div>
         </div>
       )}
 
+      {/* Arrived overlay */}
       {arrived && (
         <div className="arrival-overlay">
           <div className="arrival-content">
             <div className="arrival-check">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white"
+                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
             </div>
             <h2 className="arrival-title">You've Arrived!</h2>
             <p className="arrival-dest">{destLabel}</p>
             <div className="arrival-actions">
-              <button className="arrival-btn primary" onClick={function() {
+              <button className="arrival-btn primary" onClick={() => {
                 setArrived(false); setFromNode(null); setToNode(null);
                 setNavData(null); setProgress(0); setCurrentSeg(0);
                 navigate("/");
               }}>Back to Chat</button>
-              <button className="arrival-btn secondary" onClick={function() {
+              <button className="arrival-btn secondary" onClick={() => {
                 setArrived(false); setFromNode(null); setToNode(null);
                 setNavData(null); setProgress(0); setCurrentSeg(0);
               }}>Navigate Again</button>
@@ -440,6 +453,7 @@ export default function Navigation() {
         </div>
       )}
 
+      {/* Loading */}
       {loading && (
         <div className="nav-loading">
           <div className="nav-spinner"/>
@@ -447,15 +461,18 @@ export default function Navigation() {
         </div>
       )}
 
+      {/* Error */}
       {error && <div className="nav-error-bar">⚠ {error}</div>}
 
+      {/* Initial — scan QR */}
       {!fromNode && !loading && !arrived && (
         <div className="nav-initial">
           <div className="nav-initial-icon">📍</div>
           <h3>Navigating to</h3>
           <p className="nav-initial-dest">{destLabel}</p>
           <button className="scan-start-btn" onClick={openQR}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
               <rect x="3" y="14" width="7" height="7"/>
               <line x1="14" y1="14" x2="17" y2="14"/><line x1="21" y1="14" x2="21" y2="17"/>
@@ -471,10 +488,11 @@ export default function Navigation() {
         </div>
       )}
 
+      {/* Active navigation */}
       {navData && !loading && !arrived && fromNode && (
         <>
           {junctionNudge && (
-            <div className="junction-nudge" onClick={function() { setJunctionNudge(false); openQR(); }}>
+            <div className="junction-nudge" onClick={() => { setJunctionNudge(false); openQR(); }}>
               <span>📡 Junction ahead — tap to scan QR and confirm position</span>
             </div>
           )}
@@ -484,7 +502,7 @@ export default function Navigation() {
               <div className="instruction-icon">{curDir.icon}</div>
               <div className="instruction-text">{curDir.instruction}</div>
               {!tracking
-                ? <button className="start-walk-btn" onClick={function() { attachMotion(); }}>Start Walking</button>
+                ? <button className="start-walk-btn" onClick={() => attachMotion()}>Start Walking</button>
                 : <button className="pause-walk-btn" onClick={detachMotion}>Pause</button>
               }
             </div>
@@ -515,7 +533,8 @@ export default function Navigation() {
                 <path d={paths.full} stroke="#60a5fa" strokeWidth="4"
                   fill="none" strokeLinecap="round" strokeLinejoin="round"
                   strokeDasharray="10,8">
-                  <animate attributeName="stroke-dashoffset" from="18" to="0" dur="0.9s" repeatCount="indefinite"/>
+                  <animate attributeName="stroke-dashoffset" from="18" to="0"
+                    dur="0.9s" repeatCount="indefinite"/>
                 </path>
               )}
 
@@ -534,7 +553,7 @@ export default function Navigation() {
                 </g>
               )}
 
-              {navData.junction_nodes && navData.junction_nodes.map(function(nid) {
+              {navData.junction_nodes && navData.junction_nodes.map(nid => {
                 const pos = nodeMap[nid];
                 if (!pos) return null;
                 const idx = path.indexOf(nid);

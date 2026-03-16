@@ -84,7 +84,7 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // Load today's session — non-blocking
+  // Load today's session
   useEffect(() => {
     setHistLoaded(true);
     loadLastSession().then(msgs => {
@@ -121,12 +121,24 @@ export default function Chat() {
   };
 
   const doSend = async (textOverride) => {
-    const text = (textOverride ?? input).trim();
+    const text = (textOverride ?? input).trim().slice(0, 300);
     if (!text || loading) return;
     setInput("");
 
-    const userMsg = { id: Date.now(), role: "user", content: text,
-                      items: [], offers: [], places: [], actions: [] };
+    // Guard: make sure user is logged in
+    if (!getAuth().currentUser) {
+      setMessages(prev => [...prev, {
+        id: Date.now(), role: "assistant",
+        content: "Session expired. Please log in again.",
+        items: [], offers: [], places: [], actions: [],
+      }]);
+      return;
+    }
+
+    const userMsg = {
+      id: Date.now(), role: "user", content: text,
+      items: [], offers: [], places: [], actions: [],
+    };
     setMessages(prev => [...prev, userMsg]);
     saveMessage(userMsg);
     setLoading(true);
@@ -134,13 +146,27 @@ export default function Chat() {
     try {
       const token = await getAuth().currentUser?.getIdToken();
       const res   = await fetch(config.API_URL + "/chat", {
-        method:  "POST",
+        method: "POST",
         headers: {
-          "Content-Type":  "application/json",
-          "Authorization": "Bearer " + token,
+          "Content-Type":                "application/json",
+          "ngrok-skip-browser-warning":  "true",          // FIX: ngrok CORS
+          ...(token && { "Authorization": "Bearer " + token }),
         },
         body: JSON.stringify({ message: text }),
       });
+
+      // FIX: handle 401 gracefully
+      if (res.status === 401) {
+        setMessages(prev => [...prev, {
+          id: Date.now() + 1, role: "assistant",
+          content: "Session expired. Please log in again.",
+          items: [], offers: [], places: [], actions: [],
+        }]);
+        await signOut(auth);
+        setLoading(false);
+        return;
+      }
+
       const data   = await res.json();
       const botMsg = {
         id:      Date.now() + 1,
@@ -298,6 +324,7 @@ export default function Chat() {
           onKeyDown={e => e.key === "Enter" && doSend()}
           placeholder={listening ? "Listening..." : "Ask something..."}
           disabled={loading}
+          maxLength={300}
           className={listening ? "listening" : ""}
         />
         {voiceOk && (
