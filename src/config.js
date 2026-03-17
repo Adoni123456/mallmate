@@ -1,5 +1,5 @@
 const config = {
-  API_URL: "https://pareve-myesha-pseudoscalar.ngrok-free.dev",
+  API_URL: "http://localhost:8000",
 };
 export default config;
 //http://localhost:8000
