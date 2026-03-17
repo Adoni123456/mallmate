@@ -5,9 +5,12 @@ import "./Navigation.css";
 import config from "../config";
 
 const API               = config.API_URL;
-const SVG_SCALE         = 0.10;   // FIX: 1 SVG unit = 10cm (was 0.06)
+const SVG_SCALE         = 0.06;
 const AVG_STEP_M        = 0.75;
-const ACCEL_THRESH      = 1.5;
+// FIX: lowered threshold — 1.5 was too high, missed many steps
+const ACCEL_THRESH      = 0.8;
+// FIX: step debounce — minimum ms between counted steps (avoids double-count)
+const STEP_DEBOUNCE_MS  = 250;
 const CALIBRATION_STEPS = 10;
 
 const FALLBACK_NODES = {
@@ -44,14 +47,14 @@ const MANUAL_NODES = [
 ];
 
 const NODE_LABELS = {
-  NODE_TECH: "Tech Zone",    NODE_FASHION: "Fashion Hub",
-  NODE_SUPER: "Super Mart",  NODE_FOOD: "Food Court",
-  NODE_SHOE: "Shoe World",   NODE_LIFT: "Lift",
-  NODE_GENTS: "Gents Toilet",NODE_LADIES: "Ladies Toilet",
-  NODE_S3: "Front Entrance", NODE_BACK: "Back Entrance",
+  NODE_TECH:    "Tech Zone",     NODE_FASHION: "Fashion Hub",
+  NODE_SUPER:   "Super Mart",    NODE_FOOD:    "Food Court",
+  NODE_SHOE:    "Shoe World",    NODE_LIFT:    "Lift",
+  NODE_GENTS:   "Gents Toilet",  NODE_LADIES:  "Ladies Toilet",
+  NODE_S3:      "Front Entrance",NODE_BACK:    "Back Entrance",
 };
 
-// ── Geometry helpers ──────────────────────────────────────────────
+// ── Geometry helpers ──
 function svgDist(nodes, a, b) {
   const [x1, y1] = nodes[a] || [0, 0];
   const [x2, y2] = nodes[b] || [0, 0];
@@ -66,7 +69,7 @@ function interpolate(nodes, path, progress) {
   const frac = Math.min(progress - seg, 1);
   const [x1, y1] = nodes[path[seg]]     || [0, 0];
   const [x2, y2] = nodes[path[seg + 1]] || [0, 0];
-  return [x1 + (x2 - x1) * frac, y1 + (y2 - y1) * frac, Math.atan2(y2 - y1, x2 - x1)];
+  return [x1 + (x2-x1)*frac, y1 + (y2-y1)*frac, Math.atan2(y2-y1, x2-x1)];
 }
 function buildPathD(nodes, path, progress) {
   if (!path || path.length < 2) return { full: "", done: "" };
@@ -76,21 +79,18 @@ function buildPathD(nodes, path, progress) {
   for (let i = 0; i < path.length - 1; i++) {
     const [x1, y1] = nodes[path[i]]     || [0, 0];
     const [x2, y2] = nodes[path[i + 1]] || [0, 0];
-    if (i === 0) { full += "M " + x1 + " " + y1; done += "M " + x1 + " " + y1; }
-    else          { full += " L " + x1 + " " + y1; }
-    full += " L " + x2 + " " + y2;
+    if (i === 0) { full += "M "+x1+" "+y1; done += "M "+x1+" "+y1; }
+    else          { full += " L "+x1+" "+y1; }
+    full += " L "+x2+" "+y2;
     if (i < seg) {
-      done += " L " + x2 + " " + y2;
+      done += " L "+x2+" "+y2;
     } else if (i === seg) {
-      const ix = x1 + (x2 - x1) * Math.min(frac, 1);
-      const iy = y1 + (y2 - y1) * Math.min(frac, 1);
-      done += " L " + ix + " " + iy;
+      done += " L "+(x1+(x2-x1)*Math.min(frac,1))+" "+(y1+(y2-y1)*Math.min(frac,1));
     }
   }
   return { full, done };
 }
 
-// FIX: auth headers + ngrok header for all fetch calls
 async function getAuthHeaders() {
   const token = await getAuth().currentUser?.getIdToken().catch(() => null);
   return {
@@ -123,23 +123,33 @@ export default function Navigation() {
   });
   const [scanMode,      setScanMode]      = useState("idle");
   const [junctionNudge, setJunctionNudge] = useState(false);
+  // FIX: debug step counter visible on screen so user can verify motion works
+  const [debugSteps,    setDebugSteps]    = useState(0);
 
-  const qrStreamRef    = useRef(null);
-  const stepsInSegRef  = useRef(0);
-  const lastAccelRef   = useRef({ x: 0, y: 0, z: 0 });
-  const stepBufRef     = useRef([]);
-  const calibAccRef    = useRef(0);
-  const videoRef       = useRef(null);
-  const scannerRef     = useRef(null);
-  const navDataRef     = useRef(null);
-  const nodeMapRef     = useRef(FALLBACK_NODES);
-  const stepLenRef     = useRef(AVG_STEP_M);
-  const calibratingRef = useRef(false);
+  const qrStreamRef     = useRef(null);
+  const stepsInSegRef   = useRef(0);
+  const totalStepsRef   = useRef(0);
+  const lastAccelRef    = useRef({ x: 0, y: 0, z: 0 });
+  // FIX: step debounce ref
+  const lastStepTimeRef = useRef(0);
+  // FIX: peak detection — track rising/falling edge
+  const peakStateRef    = useRef("low"); // "low" | "high"
+  const calibAccRef     = useRef(0);
+  const videoRef        = useRef(null);
+  const scannerRef      = useRef(null);
+  const navDataRef      = useRef(null);
+  const nodeMapRef      = useRef(FALLBACK_NODES);
+  const stepLenRef      = useRef(AVG_STEP_M);
+  const calibratingRef  = useRef(false);
+  const progressRef     = useRef(0);
+  const currentSegRef   = useRef(0);
 
   useEffect(() => { navDataRef.current     = navData;    }, [navData]);
   useEffect(() => { nodeMapRef.current     = nodeMap;    }, [nodeMap]);
   useEffect(() => { stepLenRef.current     = stepLen;    }, [stepLen]);
   useEffect(() => { calibratingRef.current = calibrating;}, [calibrating]);
+  useEffect(() => { progressRef.current    = progress;   }, [progress]);
+  useEffect(() => { currentSegRef.current  = currentSeg; }, [currentSeg]);
 
   // Load nodes + SVG
   useEffect(() => {
@@ -222,7 +232,6 @@ export default function Navigation() {
     }
   }, [startBarcode]);
 
-  // Get destination from chat
   useEffect(() => {
     const state = routerLoc.state;
     if (state && state.nodeId) {
@@ -232,7 +241,6 @@ export default function Navigation() {
     }
   }, [routerLoc.state, openQR]);
 
-  // Fetch path
   useEffect(() => {
     if (!fromNode || !toNode || fromNode === toNode) return;
     let cancelled = false;
@@ -240,6 +248,8 @@ export default function Navigation() {
       setLoading(true); setError(null); setNavData(null);
       setProgress(0); setCurrentSeg(0); setArrived(false);
       stepsInSegRef.current = 0;
+      totalStepsRef.current = 0;
+      setDebugSteps(0);
       try {
         const h   = await getAuthHeaders();
         const res = await fetch(
@@ -259,19 +269,37 @@ export default function Navigation() {
     return () => { cancelled = true; };
   }, [fromNode, toNode]);
 
-  // Motion handler (reads everything from refs — no stale closures)
+  // ── FIX: Improved motion handler ──
+  // Uses peak detection (rising edge) instead of rolling average
+  // This correctly counts each footstep as ONE event
   const onMotion = useCallback((e) => {
     const acc = e.accelerationIncludingGravity;
     if (!acc) return;
-    const x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
-    const prev  = lastAccelRef.current;
-    const delta = Math.abs(x - prev.x) + Math.abs(y - prev.y) + Math.abs(z - prev.z);
-    lastAccelRef.current = { x, y, z };
-    stepBufRef.current.push(delta);
-    if (stepBufRef.current.length > 4) stepBufRef.current.shift();
-    const avg = stepBufRef.current.reduce((a, b) => a + b, 0) / stepBufRef.current.length;
-    if (avg <= ACCEL_THRESH) return;
 
+    const x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
+    // Magnitude of acceleration vector minus gravity (~9.8)
+    const magnitude = Math.sqrt(x*x + y*y + z*z);
+    // Remove gravity component — net acceleration
+    const net = Math.abs(magnitude - 9.8);
+
+    const now = Date.now();
+
+    // Peak detection: count a step when signal crosses threshold going UP
+    // and debounce to avoid counting same step multiple times
+    if (net > ACCEL_THRESH && peakStateRef.current === "low") {
+      peakStateRef.current = "high";
+      if (now - lastStepTimeRef.current > STEP_DEBOUNCE_MS) {
+        lastStepTimeRef.current = now;
+        countStep();
+      }
+    } else if (net < ACCEL_THRESH * 0.6) {
+      // Reset when signal drops below 60% of threshold
+      peakStateRef.current = "low";
+    }
+  }, []);
+
+  // FIX: countStep separated from onMotion so it can use latest refs cleanly
+  const countStep = useCallback(() => {
     if (calibratingRef.current) {
       calibAccRef.current++;
       setCalibSteps(c => c + 1);
@@ -280,39 +308,64 @@ export default function Navigation() {
 
     const data = navDataRef.current;
     if (!data) return;
-    stepsInSegRef.current++;
 
-    setCurrentSeg(seg => {
-      const path = data.path;
-      if (seg >= path.length - 1) { setArrived(true); return seg; }
-      const needed  = stepsFor(nodeMapRef.current, path[seg], path[seg + 1], stepLenRef.current);
-      const segProg = stepsInSegRef.current / needed;
-      setProgress(seg + Math.min(segProg, 1));
-      const nextNode = path[seg + 1];
-      if (segProg > 0.85 && data.junction_nodes && data.junction_nodes.includes(nextNode)) {
-        setJunctionNudge(true);
-        try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch(e) {}
+    totalStepsRef.current++;
+    stepsInSegRef.current++;
+    setDebugSteps(totalStepsRef.current);
+
+    const seg  = currentSegRef.current;
+    const path = data.path;
+    if (seg >= path.length - 1) { setArrived(true); return; }
+
+    const needed  = stepsFor(nodeMapRef.current, path[seg], path[seg + 1], stepLenRef.current);
+    const segProg = stepsInSegRef.current / needed;
+    const newProg = seg + Math.min(segProg, 1);
+
+    // FIX: update progress directly — not inside setCurrentSeg updater
+    setProgress(newProg);
+    progressRef.current = newProg;
+
+    // Junction nudge
+    if (segProg > 0.85 && data.junction_nodes && data.junction_nodes.includes(path[seg + 1])) {
+      setJunctionNudge(true);
+      try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch(e) {}
+    }
+
+    // Advance to next segment
+    if (segProg >= 1) {
+      stepsInSegRef.current = 0;
+      setJunctionNudge(false);
+      const nextSeg = seg + 1;
+      currentSegRef.current = nextSeg;
+      setCurrentSeg(nextSeg);
+      setProgress(nextSeg);
+      progressRef.current = nextSeg;
+
+      if (nextSeg >= path.length - 1) {
+        setArrived(true);
+        window.removeEventListener("devicemotion", onMotion);
+        setTracking(false);
       }
-      if (segProg >= 1) {
-        stepsInSegRef.current = 0;
-        setJunctionNudge(false);
-        if (seg + 1 >= path.length - 1) {
-          setArrived(true);
-          window.removeEventListener("devicemotion", onMotion);
-          setTracking(false);
-        }
-        return seg + 1;
-      }
-      return seg;
-    });
-  }, []);
+    }
+  }, [onMotion]);
 
   const attachMotion = useCallback((forCalib) => {
+    // FIX: reset peak state on attach
+    peakStateRef.current    = "low";
+    lastStepTimeRef.current = 0;
+
     if (typeof DeviceMotionEvent !== "undefined" &&
         typeof DeviceMotionEvent.requestPermission === "function") {
+      // iOS 13+ requires explicit permission
       DeviceMotionEvent.requestPermission()
-        .then(p => { if (p === "granted") window.addEventListener("devicemotion", onMotion); })
-        .catch(() => {});
+        .then(p => {
+          if (p === "granted") {
+            window.addEventListener("devicemotion", onMotion);
+          } else {
+            setError("Motion permission denied. Please allow motion access in iOS Settings.");
+          }
+        })
+        .catch(() => setError("Could not request motion permission."));
     } else {
       window.addEventListener("devicemotion", onMotion);
     }
@@ -324,7 +377,6 @@ export default function Navigation() {
     setTracking(false);
   }, [onMotion]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       detachMotion();
@@ -352,7 +404,6 @@ export default function Navigation() {
     detachMotion();
   }, [detachMotion]);
 
-  // Derived values
   const path      = navData ? navData.path : [];
   const paths     = buildPathD(nodeMap, path, progress);
   const animPos   = interpolate(nodeMap, path, progress);
@@ -371,10 +422,15 @@ export default function Navigation() {
           </svg>
         </button>
         <span className="nav-header-title">Navigation</span>
-        <div style={{ width: 40 }}/>
+        {/* FIX: debug step counter in header — remove after testing */}
+        {tracking && (
+          <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700 }}>
+            {debugSteps} steps
+          </span>
+        )}
+        {!tracking && <div style={{ width: 40 }}/>}
       </div>
 
-      {/* Calibration overlay */}
       {calibrating && (
         <div className="calib-overlay">
           <div className="calib-card">
@@ -390,7 +446,6 @@ export default function Navigation() {
         </div>
       )}
 
-      {/* QR / Manual overlay */}
       {(scanMode === "scanning" || scanMode === "manual") && (
         <div className="qr-overlay">
           <div className="qr-sheet">
@@ -426,7 +481,6 @@ export default function Navigation() {
         </div>
       )}
 
-      {/* Arrived overlay */}
       {arrived && (
         <div className="arrival-overlay">
           <div className="arrival-content">
@@ -453,7 +507,6 @@ export default function Navigation() {
         </div>
       )}
 
-      {/* Loading */}
       {loading && (
         <div className="nav-loading">
           <div className="nav-spinner"/>
@@ -461,10 +514,8 @@ export default function Navigation() {
         </div>
       )}
 
-      {/* Error */}
       {error && <div className="nav-error-bar">⚠ {error}</div>}
 
-      {/* Initial — scan QR */}
       {!fromNode && !loading && !arrived && (
         <div className="nav-initial">
           <div className="nav-initial-icon">📍</div>
@@ -488,7 +539,6 @@ export default function Navigation() {
         </div>
       )}
 
-      {/* Active navigation */}
       {navData && !loading && !arrived && fromNode && (
         <>
           {junctionNudge && (
@@ -502,7 +552,9 @@ export default function Navigation() {
               <div className="instruction-icon">{curDir.icon}</div>
               <div className="instruction-text">{curDir.instruction}</div>
               {!tracking
-                ? <button className="start-walk-btn" onClick={() => attachMotion()}>Start Walking</button>
+                ? <button className="start-walk-btn" onClick={() => attachMotion()}>
+                    Start Walking
+                  </button>
                 : <button className="pause-walk-btn" onClick={detachMotion}>Pause</button>
               }
             </div>
@@ -547,7 +599,7 @@ export default function Navigation() {
                   </circle>
                   <circle cx={nodeMap[toNode][0]} cy={nodeMap[toNode][1]}
                     r="10" fill="#ef4444" stroke="white" strokeWidth="2.5"/>
-                  <text x={nodeMap[toNode][0]} y={nodeMap[toNode][1] + 1}
+                  <text x={nodeMap[toNode][0]} y={nodeMap[toNode][1]+1}
                     textAnchor="middle" dominantBaseline="central"
                     fill="white" fontSize="9" fontWeight="bold">D</text>
                 </g>
@@ -556,8 +608,7 @@ export default function Navigation() {
               {navData.junction_nodes && navData.junction_nodes.map(nid => {
                 const pos = nodeMap[nid];
                 if (!pos) return null;
-                const idx = path.indexOf(nid);
-                if (idx <= currentSeg) return null;
+                if (path.indexOf(nid) <= currentSeg) return null;
                 return (
                   <g key={nid}>
                     <circle cx={pos[0]} cy={pos[1]} r="8" fill="#fbbf24" opacity="0.25"/>
@@ -567,11 +618,11 @@ export default function Navigation() {
               })}
 
               {animPos && (
-                <g transform={"translate(" + animPos[0] + "," + animPos[1] + ")"}>
+                <g transform={"translate("+animPos[0]+","+animPos[1]+")"}>
                   <circle r="22" fill="#3b82f6" opacity="0.12"/>
                   <circle r="14" fill="#1d4ed8" opacity="0.2"/>
                   <circle r="9"  fill="#3b82f6" stroke="white" strokeWidth="2.5"/>
-                  <g transform={"rotate(" + ((animPos[2] * 180) / Math.PI) + ")"}>
+                  <g transform={"rotate("+((animPos[2]*180)/Math.PI)+")"}>
                     <polygon points="0,-16 4,-8 -4,-8" fill="#60a5fa" opacity="0.9"/>
                   </g>
                 </g>
