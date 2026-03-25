@@ -10,6 +10,11 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+       if (currentUser) {
+      alert("User logged in: " + currentUser.email);  // ✅ debug
+    } else {
+      alert("No user logged in");
+    }
       setUser(currentUser);
       setLoading(false);
     });

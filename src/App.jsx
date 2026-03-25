@@ -18,7 +18,7 @@ import ShopKeeper   from "./pages/ShopKeeper";
 function ProtectedRoute({ children }) {
  const { user, loading } = useAuth();
 
-  if (loading) return null; // or spinner
+  if (loading) return  <div>Checking login...</div>; // or spinner
   return user ? children : <Navigate to="/login" />;
 }
 

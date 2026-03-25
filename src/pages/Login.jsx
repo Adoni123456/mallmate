@@ -4,7 +4,7 @@ import { auth, googleProvider } from "../firebase";
 import { Link } from "react-router-dom";
 import "./Auth.css";
 import { Eye, EyeOff } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+
 
 // Map Firebase error codes → generic messages (FIX: no internal details leaked)
 function friendlyError(code) {
@@ -30,23 +30,6 @@ function Login() {
   const [password,     setPassword]     = useState("");
   const [error,        setError]        = useState("");
   const [showPassword, setShowPassword] = useState(false);
-
-  const navigate = useNavigate();
-
-  useEffect(() => {
-  getRedirectResult(auth)
-    .then((result) => {
-       if (result?.user) {
-          console.log("User logged in:", result.user);
-
-          // ✅ redirect AFTER successful login
-          navigate("/chat");   // change to "/dashboard" if needed
-        }
-    })
-    .catch((error) => {
-      console.error(error);
-    });
-}, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
