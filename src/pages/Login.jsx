@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { signInWithEmailAndPassword, signInWithRedirect, signInWithPopup} from "firebase/auth";
 import { auth, googleProvider } from "../firebase";
 import { Link } from "react-router-dom";
@@ -29,7 +29,7 @@ function Login() {
   const [password,     setPassword]     = useState("");
   const [error,        setError]        = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  
+
   useEffect(() => {
   getRedirectResult(auth)
     .then((result) => {
