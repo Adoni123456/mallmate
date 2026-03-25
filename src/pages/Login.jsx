@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { signInWithEmailAndPassword, signInWithPopup } from "firebase/auth";
+import { signInWithEmailAndPassword, signInWithRedirect, signInWithPopup} from "firebase/auth";
 import { auth, googleProvider } from "../firebase";
 import { Link } from "react-router-dom";
 import "./Auth.css";
@@ -29,6 +29,18 @@ function Login() {
   const [password,     setPassword]     = useState("");
   const [error,        setError]        = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  
+  useEffect(() => {
+  getRedirectResult(auth)
+    .then((result) => {
+      if (result) {
+        console.log("User logged in:", result.user);
+      }
+    })
+    .catch((error) => {
+      console.error(error);
+    });
+}, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -43,7 +55,15 @@ function Login() {
 
   const handleGoogleLogin = async () => {
     try {
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+    if (isMobile) {
+      // Mobile → use redirect
+      await signInWithRedirect(auth, googleProvider);
+    } else {
+      // Desktop → use popup
       await signInWithPopup(auth, googleProvider);
+    }
     } catch (err) {
       setError(friendlyError(err.code));
     }
