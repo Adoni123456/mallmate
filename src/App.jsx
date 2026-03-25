@@ -16,7 +16,9 @@ import ShopKeeper   from "./pages/ShopKeeper";
 
 // ── Protects customer routes — must be logged in ──────────────────
 function ProtectedRoute({ children }) {
-  const { user } = useAuth();
+ const { user, loading } = useAuth();
+
+  if (loading) return null; // or spinner
   return user ? children : <Navigate to="/login" />;
 }
 
