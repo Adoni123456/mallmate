@@ -3,3 +3,7 @@ const config = {
 };
 export default config;
 //http://localhost:8000
+//http://localhost:5173/admin
+//Open DB Browser for SQLite
+//Click Open Database
+//C:\Users\adoni\mallmate\backend\mall.db
