@@ -8,7 +8,7 @@ import config from "../config";
 // Constants
 // ─────────────────────────────────────────────
 const API                 = config.API_URL;
-const SVG_SCALE           = 0.06;
+const SVG_SCALE           = 0.10;
 const AVG_STEP_M          = 0.75;
 const ACCEL_THRESH        = 0.8;
 const STEP_DEBOUNCE_MS    = 250;
