@@ -4,39 +4,25 @@ import { getAuth } from "firebase/auth";
 import "./Navigation.css";
 import config from "../config";
 
-// ─────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────
-const API                 = config.API_URL;
-const SVG_SCALE           = 0.06;
-const AVG_STEP_M          = 0.75;
-const ACCEL_THRESH        = 0.8;
-const STEP_DEBOUNCE_MS    = 250;
-const CALIBRATION_STEPS   = 10;
-const QR_SCAN_INTERVAL_MS = 150;
-const MAX_DRIFT_ADJUST    = 0.15;
-const NOISE_WINDOW_SIZE   = 20;
+const API                  = config.API_URL;
+const SVG_SCALE            = 0.06;
+const AVG_STEP_M           = 0.75;
+const ACCEL_THRESH         = 0.8;
+const STEP_DEBOUNCE_MS     = 250;
+const CALIBRATION_STEPS    = 10;
+const QR_SCAN_INTERVAL_MS  = 150;
+const MAX_DRIFT_ADJUST     = 0.15;
+const NOISE_WINDOW_SIZE    = 20;
 
-// ── Phase 1A: Stationary detection ──
-// If the net-accel variance stays below STATIONARY_VAR_THRESH for
-// STATIONARY_WINDOW_MS milliseconds, the user is standing still.
-// The dot freezes until movement is detected again.
-const STATIONARY_VAR_THRESH = 0.09;  // m/s² variance — below this = still
-const STATIONARY_WINDOW_MS  = 1500;  // ms of stillness before freezing dot
-const ACCEL_BUFFER_SIZE     = 30;    // rolling window for variance calculation
+// Stationary detection constants
+const STATIONARY_VAR_THRESH = 0.09;
+const STATIONARY_WINDOW_MS  = 1500;
+const ACCEL_BUFFER_SIZE     = 30;
 
-// ── Phase 1B: PDR heading gate ──
-// Smooth the compass over N samples (handles sensor jitter).
-// Only let a step advance the dot when the user's heading is within
-// OFF_ROUTE_ANGLE_DEG of the current segment bearing.
-// After OFF_ROUTE_STEPS_WARN consecutive off-angle steps, show a warning.
-const HEADING_SMOOTH_SIZE  = 6;
-const OFF_ROUTE_ANGLE_DEG  = 60;
-const OFF_ROUTE_STEPS_WARN = 5;
+// NOTE: Compass heading gate REMOVED — compass is unreliable indoors
+// due to metal/concrete interference and unknown mall orientation vs north.
+// Stationary detection kept as it doesn't rely on compass.
 
-// ─────────────────────────────────────────────
-// Static data
-// ─────────────────────────────────────────────
 const FALLBACK_NODES = {
   "NODE_TECH":   [77.8,  412.9], "NODE_FASHION":[440.9, 78.5],
   "NODE_SUPER":  [762.2, 228.9], "NODE_FOOD":   [339.3, 599.0],
@@ -78,9 +64,7 @@ const NODE_LABELS = {
   NODE_S3: "Front Entrance",  NODE_BACK: "Back Entrance",
 };
 
-// ─────────────────────────────────────────────
-// Pure geometry helpers
-// ─────────────────────────────────────────────
+// ── Geometry helpers ──
 function svgDist(nodes, a, b) {
   const [x1, y1] = nodes[a] || [0, 0];
   const [x2, y2] = nodes[b] || [0, 0];
@@ -99,7 +83,7 @@ function interpolate(nodes, path, progress) {
   const frac = smoothstep(Math.min(progress - seg, 1));
   const [x1, y1] = nodes[path[seg]]     || [0, 0];
   const [x2, y2] = nodes[path[seg + 1]] || [0, 0];
-  return [x1 + (x2 - x1) * frac, y1 + (y2 - y1) * frac, Math.atan2(y2 - y1, x2 - x1)];
+  return [x1 + (x2-x1)*frac, y1 + (y2-y1)*frac, Math.atan2(y2-y1, x2-x1)];
 }
 function buildPathD(nodes, path, progress) {
   if (!path || path.length < 2) return { full: "", done: "" };
@@ -118,23 +102,6 @@ function buildPathD(nodes, path, progress) {
   return { full, done };
 }
 
-// ── Phase 1B helpers ──
-// Returns the compass bearing (0=N, 90=E, CW) of a path segment in SVG space.
-// SVG: x right, y down. math angle 0=right → compass 90 (east).
-function segBearingDeg(nodes, path, seg) {
-  if (!path || seg >= path.length - 1) return null;
-  const [x1, y1] = nodes[path[seg]]     || [0, 0];
-  const [x2, y2] = nodes[path[seg + 1]] || [0, 0];
-  const mathDeg  = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
-  return ((mathDeg + 90) + 360) % 360;
-}
-// Shortest angular difference, result in [-180, 180]
-function angleDiff(a, b) {
-  let d = ((a - b) % 360 + 360) % 360;
-  if (d > 180) d -= 360;
-  return d;
-}
-
 async function getAuthHeaders() {
   const token = await getAuth().currentUser?.getIdToken().catch(() => null);
   return {
@@ -148,7 +115,6 @@ export default function Navigation() {
   const routerLoc = useLocation();
   const navigate  = useNavigate();
 
-  // ── Existing state ──
   const [nodeMap,       setNodeMap]       = useState(FALLBACK_NODES);
   const [mapSvg,        setMapSvg]        = useState(null);
   const [fromNode,      setFromNode]      = useState(null);
@@ -170,42 +136,32 @@ export default function Navigation() {
   const [junctionNudge, setJunctionNudge] = useState(false);
   const [scanStatus,    setScanStatus]    = useState("");
   const [debugSteps,    setDebugSteps]    = useState(0);
+  const [isStationary,  setIsStationary]  = useState(false);
 
-  // ── Phase 1 state (new) ──
-  const [isStationary, setIsStationary] = useState(false); // dot frozen indicator
-  const [offRoute,     setOffRoute]     = useState(false); // wrong-direction warning
+  // Refs
+  const adaptiveThreshRef   = useRef(ACCEL_THRESH);
+  const noiseWindowRef      = useRef([]);
+  const qrConfirmedSegRef   = useRef(null);
+  const stepsSinceQRRef     = useRef(0);
+  const qrStreamRef         = useRef(null);
+  const stepsInSegRef       = useRef(0);
+  const totalStepsRef       = useRef(0);
+  const lastStepTimeRef     = useRef(0);
+  const peakStateRef        = useRef("low");
+  const calibAccRef         = useRef(0);
+  const videoRef            = useRef(null);
+  const scannerRef          = useRef(null);
+  const lastQRScanTimeRef   = useRef(0);
+  const navDataRef          = useRef(null);
+  const nodeMapRef          = useRef(FALLBACK_NODES);
+  const stepLenRef          = useRef(AVG_STEP_M);
+  const calibratingRef      = useRef(false);
+  const progressRef         = useRef(0);
+  const currentSegRef       = useRef(0);
+  const accelBufferRef      = useRef([]);
+  const stationaryTimerRef  = useRef(null);
+  const isStationaryRef     = useRef(false);
 
-  // ── Existing refs ──
-  const adaptiveThreshRef  = useRef(ACCEL_THRESH);
-  const noiseWindowRef     = useRef([]);
-  const qrConfirmedSegRef  = useRef(null);
-  const stepsSinceQRRef    = useRef(0);
-  const qrStreamRef        = useRef(null);
-  const stepsInSegRef      = useRef(0);
-  const totalStepsRef      = useRef(0);
-  const lastStepTimeRef    = useRef(0);
-  const peakStateRef       = useRef("low");
-  const calibAccRef        = useRef(0);
-  const videoRef           = useRef(null);
-  const scannerRef         = useRef(null);
-  const lastQRScanTimeRef  = useRef(0);
-  const navDataRef         = useRef(null);
-  const nodeMapRef         = useRef(FALLBACK_NODES);
-  const stepLenRef         = useRef(AVG_STEP_M);
-  const calibratingRef     = useRef(false);
-  const progressRef        = useRef(0);
-  const currentSegRef      = useRef(0);
-
-  // ── Phase 1A refs: stationary detection ──
-  const accelBufferRef      = useRef([]);   // rolling net-accel buffer
-  const stationaryTimerRef  = useRef(null); // setTimeout handle
-  const isStationaryRef     = useRef(false);// ref mirror of isStationary state
-
-  // ── Phase 1B refs: heading / PDR ──
-  const headingBufferRef    = useRef([]);   // rolling compass readings
-  const offRouteCountRef    = useRef(0);    // consecutive off-angle step count
-
-  // Sync state → refs
   useEffect(() => { navDataRef.current      = navData;      }, [navData]);
   useEffect(() => { nodeMapRef.current      = nodeMap;      }, [nodeMap]);
   useEffect(() => { stepLenRef.current      = stepLen;      }, [stepLen]);
@@ -214,7 +170,7 @@ export default function Navigation() {
   useEffect(() => { currentSegRef.current   = currentSeg;   }, [currentSeg]);
   useEffect(() => { isStationaryRef.current = isStationary; }, [isStationary]);
 
-  // Load jsQR
+  // Load jsQR for iOS/Firefox fallback
   useEffect(() => {
     if (!window.jsQR) {
       const s = document.createElement("script");
@@ -245,58 +201,15 @@ export default function Navigation() {
     return () => { cancelled = true; };
   }, []);
 
-  // ── Phase 1B: DeviceOrientation — compass heading ──
-  // Keeps the heading buffer warm at all times (even when not tracking)
-  // so PDR is ready the moment the user taps Start Walking.
-  const onOrientation = useCallback((e) => {
-    // iOS gives webkitCompassHeading (0–360, CW from magnetic north).
-    // Android with absolute=true gives e.alpha (also 0–360 CW from north).
-    const heading = e.webkitCompassHeading != null
-      ? e.webkitCompassHeading
-      : (e.absolute && e.alpha != null ? e.alpha : null);
-    if (heading == null) return;
-    const buf = headingBufferRef.current;
-    buf.push(heading);
-    if (buf.length > HEADING_SMOOTH_SIZE) buf.shift();
-  }, []);
-
-  useEffect(() => {
-    // For non-iOS browsers, attach immediately.
-    // iOS 13+ permission is requested lazily inside attachMotion.
-    if (typeof DeviceOrientationEvent === "undefined") return;
-    if (typeof DeviceOrientationEvent.requestPermission === "function") return; // iOS — defer
-    window.addEventListener("deviceorientation", onOrientation, true);
-    return () => window.removeEventListener("deviceorientation", onOrientation, true);
-  }, [onOrientation]);
-
-  // Returns circular mean of the heading buffer (handles 359→1 wraparound).
-  // Returns null if buffer is empty.
-  const getSmoothedHeading = useCallback(() => {
-    const buf = headingBufferRef.current;
-    if (buf.length === 0) return null;
-    let sinSum = 0, cosSum = 0;
-    buf.forEach(h => {
-      sinSum += Math.sin((h * Math.PI) / 180);
-      cosSum += Math.cos((h * Math.PI) / 180);
-    });
-    const mean = (Math.atan2(sinSum / buf.length, cosSum / buf.length) * 180) / Math.PI;
-    return (mean + 360) % 360;
-  }, []);
-
-  // ── Phase 1A: Stationary detection ──
-  // Called on every motion sample with the current net-accel value.
-  // Computes rolling variance; schedules/cancels the freeze timer.
+  // ── Stationary detection ──
   const updateStationaryState = useCallback((net) => {
     const buf = accelBufferRef.current;
     buf.push(net);
     if (buf.length > ACCEL_BUFFER_SIZE) buf.shift();
-    if (buf.length < 10) return; // not enough data yet
-
+    if (buf.length < 10) return;
     const mean     = buf.reduce((a, b) => a + b, 0) / buf.length;
     const variance = buf.reduce((s, v) => s + (v - mean) ** 2, 0) / buf.length;
-
     if (variance < STATIONARY_VAR_THRESH) {
-      // Low variance → start the freeze timer if not already running
       if (!stationaryTimerRef.current) {
         stationaryTimerRef.current = setTimeout(() => {
           setIsStationary(true);
@@ -304,7 +217,6 @@ export default function Navigation() {
         }, STATIONARY_WINDOW_MS);
       }
     } else {
-      // Movement detected → cancel timer and unfreeze
       if (stationaryTimerRef.current) {
         clearTimeout(stationaryTimerRef.current);
         stationaryTimerRef.current = null;
@@ -316,7 +228,7 @@ export default function Navigation() {
     }
   }, []);
 
-  // ── QR helpers (unchanged) ──
+  // ── QR helpers ──
   const closeQR = useCallback(() => {
     if (qrStreamRef.current) {
       qrStreamRef.current.getTracks().forEach(t => t.stop());
@@ -339,11 +251,11 @@ export default function Navigation() {
     for (let i = prev; i < confirmedSegIdx; i++) {
       expectedSteps += stepsFor(nodes, data.path[i], data.path[i + 1], stepL);
     }
-    const actualSteps  = stepsSinceQRRef.current;
+    const actualSteps = stepsSinceQRRef.current;
     if (actualSteps < 5 || expectedSteps < 1) return;
-    const ratio        = actualSteps / expectedSteps;
-    const clampedRatio = Math.max(1 - MAX_DRIFT_ADJUST, Math.min(1 + MAX_DRIFT_ADJUST, ratio));
-    const newStepLen   = Math.min(Math.max(stepL * clampedRatio, 0.4), 1.2);
+    const ratio       = actualSteps / expectedSteps;
+    const clamped     = Math.max(1 - MAX_DRIFT_ADJUST, Math.min(1 + MAX_DRIFT_ADJUST, ratio));
+    const newStepLen  = Math.min(Math.max(stepL * clamped, 0.4), 1.2);
     setStepLen(newStepLen);
     localStorage.setItem("mm_step_len", String(newStepLen));
   }, []);
@@ -354,23 +266,15 @@ export default function Navigation() {
     if (raw.startsWith("MALLMATE:")) nodeId = raw.split(":")[1];
     const m = raw.match(/node=([A-Z_0-9]+)/);
     if (m) nodeId = m[1];
-
     if (!navDataRef.current) {
       setFromNode(nodeId);
     } else {
       const idx = navDataRef.current.path.indexOf(nodeId);
-      if (idx === -1) {
-        // Not on current route — silently re-route from scanned node
-        setError(null);
-        setFromNode(nodeId);
-        return;
-      }
+      if (idx === -1) { setError(null); setFromNode(nodeId); return; }
       applyDriftCorrection(idx);
       qrConfirmedSegRef.current = idx;
       stepsSinceQRRef.current   = 0;
       stepsInSegRef.current     = 0;
-      offRouteCountRef.current  = 0;
-      setOffRoute(false);
       setCurrentSeg(idx);
       setProgress(idx);
       setError(null);
@@ -394,16 +298,23 @@ export default function Navigation() {
       canvas.height = video.videoHeight || 240;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
       if ("BarcodeDetector" in window) {
         const det = new BarcodeDetector({ formats: ["qr_code"] });
         det.detect(video)
           .then(codes => {
             if (codes.length > 0) { handleQRResult(codes[0].rawValue); return; }
-            if (window.jsQR) { const c = window.jsQR(imgData.data, canvas.width, canvas.height); if (c?.data) { handleQRResult(c.data); return; } }
+            if (window.jsQR) {
+              const c = window.jsQR(imgData.data, canvas.width, canvas.height);
+              if (c?.data) { handleQRResult(c.data); return; }
+            }
             scannerRef.current = requestAnimationFrame(scanFrame);
           })
           .catch(() => {
-            if (window.jsQR) { const c = window.jsQR(imgData.data, canvas.width, canvas.height); if (c?.data) { handleQRResult(c.data); return; } }
+            if (window.jsQR) {
+              const c = window.jsQR(imgData.data, canvas.width, canvas.height);
+              if (c?.data) { handleQRResult(c.data); return; }
+            }
             scannerRef.current = requestAnimationFrame(scanFrame);
           });
       } else if (window.jsQR) {
@@ -419,18 +330,16 @@ export default function Navigation() {
 
   const openQR = useCallback(async () => {
     setScanStatus("Starting camera...");
-    const isSecureContext =
-      location.protocol === "https:" ||
-      location.hostname === "localhost" ||
-      location.hostname === "127.0.0.1";
-    if (!isSecureContext) {
+    const isSecure = location.protocol === "https:" ||
+      location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    if (!isSecure) {
       setScanStatus(""); setScanMode("manual");
-      setError("Camera requires HTTPS. Use ngrok or deploy to HTTPS to enable QR scanning.");
+      setError("Camera requires HTTPS. Select your location manually.");
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
       setScanStatus(""); setScanMode("manual");
-      setError("Camera not supported on this browser. Select your location manually.");
+      setError("Camera not supported. Select your location manually.");
       return;
     }
     try {
@@ -445,14 +354,16 @@ export default function Navigation() {
       setTimeout(() => {
         if (!videoRef.current || !qrStreamRef.current) return;
         videoRef.current.srcObject = stream;
-        videoRef.current.play().then(() => startBarcode()).catch(() => startBarcode());
+        videoRef.current.play()
+          .then(() => startBarcode())
+          .catch(() => startBarcode());
       }, 300);
-    } catch (e) {
+    } catch(e) {
       setScanStatus(""); setScanMode("manual");
-      if      (e.name === "NotAllowedError")  setError("Camera permission denied. Please allow camera access and try again.");
+      if      (e.name === "NotAllowedError")  setError("Camera permission denied. Allow camera and try again.");
       else if (e.name === "NotFoundError")    setError("No camera found on this device.");
-      else if (e.name === "NotReadableError") setError("Camera is in use by another app. Close it and try again.");
-      else                                    setError("Camera unavailable (" + e.name + "). Select your location manually.");
+      else if (e.name === "NotReadableError") setError("Camera is in use by another app.");
+      else                                    setError("Camera unavailable. Select your location manually.");
     }
   }, [startBarcode]);
 
@@ -476,14 +387,10 @@ export default function Navigation() {
       stepsSinceQRRef.current   = 0;
       qrConfirmedSegRef.current = null;
       setDebugSteps(0);
-      // Reset all Phase 1 state for the new route
       adaptiveThreshRef.current = ACCEL_THRESH;
       noiseWindowRef.current    = [];
       accelBufferRef.current    = [];
-      headingBufferRef.current  = [];
-      offRouteCountRef.current  = 0;
       setIsStationary(false);
-      setOffRoute(false);
       isStationaryRef.current   = false;
       if (stationaryTimerRef.current) {
         clearTimeout(stationaryTimerRef.current);
@@ -508,15 +415,15 @@ export default function Navigation() {
     return () => { cancelled = true; };
   }, [fromNode, toNode]);
 
-  // ── onMotion: adaptive threshold + Phase 1A stationary detection ──
+  // ── Motion handler with stationary detection ──
   const onMotion = useCallback((e) => {
     const acc = e.accelerationIncludingGravity;
     if (!acc) return;
     const x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
-    const magnitude = Math.sqrt(x * x + y * y + z * z);
+    const magnitude = Math.sqrt(x*x + y*y + z*z);
     const net       = Math.abs(magnitude - 9.8);
 
-    // Adaptive threshold update
+    // Adaptive threshold
     const win = noiseWindowRef.current;
     win.push(net);
     if (win.length > NOISE_WINDOW_SIZE) win.shift();
@@ -526,7 +433,7 @@ export default function Navigation() {
       adaptiveThreshRef.current = Math.max(ACCEL_THRESH, noiseFloor + 0.5);
     }
 
-    // Phase 1A: feed net-accel into stationary detector
+    // Stationary detection
     updateStationaryState(net);
 
     const thresh = adaptiveThreshRef.current;
@@ -543,56 +450,31 @@ export default function Navigation() {
     }
   }, [updateStationaryState]);
 
-  // ── countStep: Phase 1A stationary gate + Phase 1B PDR heading gate ──
+  // ── countStep: stationary gate only — no compass gate ──
   const countStep = useCallback(() => {
     if (calibratingRef.current) {
       calibAccRef.current++;
       setCalibSteps(c => c + 1);
       return;
     }
-
     const data = navDataRef.current;
     if (!data) return;
 
-    // ── Phase 1A gate: ignore step if user is standing still ──
+    // Only gate: ignore steps when standing still
     if (isStationaryRef.current) return;
 
     const seg  = currentSegRef.current;
     const path = data.path;
     if (seg >= path.length - 1) { setArrived(true); return; }
 
-    // ── Phase 1B gate: only advance if heading aligns with path ──
-    // We get the smoothed compass heading and compare it to the bearing
-    // of the current segment. Steps that are clearly off-direction are
-    // discarded and counted toward an off-route warning.
-    const bearing     = segBearingDeg(nodeMapRef.current, path, seg);
-    const userHeading = getSmoothedHeading();
-
-    if (bearing !== null && userHeading !== null) {
-      const diff = Math.abs(angleDiff(userHeading, bearing));
-      if (diff > OFF_ROUTE_ANGLE_DEG) {
-        // Heading is off — block dot advancement, maybe warn
-        offRouteCountRef.current++;
-        if (offRouteCountRef.current >= OFF_ROUTE_STEPS_WARN) {
-          setOffRoute(true);
-          try { if (navigator.vibrate) navigator.vibrate([100, 50, 100]); } catch(_) {}
-        }
-        return; // don't advance dot for this step
-      }
-      // Heading is good — clear any warning
-      offRouteCountRef.current = 0;
-      setOffRoute(false);
-    }
-
-    // ── All gates passed: advance dot ──
     totalStepsRef.current++;
     stepsInSegRef.current++;
     stepsSinceQRRef.current++;
     setDebugSteps(totalStepsRef.current);
 
-    const needed      = stepsFor(nodeMapRef.current, path[seg], path[seg + 1], stepLenRef.current);
-    const segProg     = stepsInSegRef.current / needed;
-    const newProg     = Math.min(seg + Math.min(segProg, 1), path.length - 1);
+    const needed  = stepsFor(nodeMapRef.current, path[seg], path[seg + 1], stepLenRef.current);
+    const segProg = stepsInSegRef.current / needed;
+    const newProg = Math.min(seg + Math.min(segProg, 1), path.length - 1);
 
     setProgress(newProg);
     progressRef.current = newProg;
@@ -603,25 +485,22 @@ export default function Navigation() {
     }
 
     if (segProg >= 1) {
-      stepsInSegRef.current    = 0;
-      offRouteCountRef.current = 0;
-      setOffRoute(false);
+      stepsInSegRef.current = 0;
       setJunctionNudge(false);
-      const nextSeg            = seg + 1;
-      currentSegRef.current    = nextSeg;
+      const nextSeg         = seg + 1;
+      currentSegRef.current = nextSeg;
       setCurrentSeg(nextSeg);
-      const clampedProg        = Math.min(nextSeg, path.length - 1);
+      const clampedProg     = Math.min(nextSeg, path.length - 1);
       setProgress(clampedProg);
-      progressRef.current      = clampedProg;
+      progressRef.current   = clampedProg;
       if (nextSeg >= path.length - 1) {
         setArrived(true);
         window.removeEventListener("devicemotion", onMotion);
         setTracking(false);
       }
     }
-  }, [getSmoothedHeading, onMotion]);
+  }, [onMotion]);
 
-  // ── attachMotion: request both motion + orientation permissions ──
   const attachMotion = useCallback((forCalib) => {
     peakStateRef.current      = "low";
     lastStepTimeRef.current   = 0;
@@ -630,43 +509,30 @@ export default function Navigation() {
     accelBufferRef.current    = [];
 
     if (typeof DeviceMotionEvent === "undefined") {
-      setError("Motion sensors are not supported on this device.");
+      setError("Motion sensors not supported on this device.");
       return;
     }
 
     const doAttach = () => {
       window.addEventListener("devicemotion", onMotion);
       if (!forCalib) setTracking(true);
-
-      // Also grab orientation permission on iOS 13+ at the same time
-      if (typeof DeviceOrientationEvent !== "undefined" &&
-          typeof DeviceOrientationEvent.requestPermission === "function") {
-        DeviceOrientationEvent.requestPermission()
-          .then(p => {
-            if (p === "granted")
-              window.addEventListener("deviceorientation", onOrientation, true);
-          })
-          .catch(() => {});
-      }
     };
 
     if (typeof DeviceMotionEvent.requestPermission === "function") {
       DeviceMotionEvent.requestPermission()
         .then(p => {
           if (p === "granted") doAttach();
-          else setError("Motion permission denied. Please allow motion access in iOS Settings.");
+          else setError("Motion permission denied. Allow in iOS Settings.");
         })
         .catch(() => setError("Could not request motion permission."));
     } else {
       doAttach();
     }
-  }, [onMotion, onOrientation]);
+  }, [onMotion]);
 
   const detachMotion = useCallback(() => {
     window.removeEventListener("devicemotion", onMotion);
-    // Keep orientation listener alive so heading buffer stays warm
     setTracking(false);
-    // Clear stationary timer — no point firing after user manually pauses
     if (stationaryTimerRef.current) {
       clearTimeout(stationaryTimerRef.current);
       stationaryTimerRef.current = null;
@@ -678,14 +544,13 @@ export default function Navigation() {
   useEffect(() => {
     return () => {
       detachMotion();
-      window.removeEventListener("deviceorientation", onOrientation, true);
       if (qrStreamRef.current) {
         qrStreamRef.current.getTracks().forEach(t => t.stop());
         qrStreamRef.current = null;
       }
       if (stationaryTimerRef.current) clearTimeout(stationaryTimerRef.current);
     };
-  }, [detachMotion, onOrientation]);
+  }, [detachMotion]);
 
   const startCalibration = useCallback(() => {
     calibAccRef.current = 0;
@@ -704,7 +569,6 @@ export default function Navigation() {
     detachMotion();
   }, [detachMotion]);
 
-  // ── Derived render values ──
   const path      = navData ? navData.path : [];
   const paths     = buildPathD(nodeMap, path, progress);
   const animPos   = interpolate(nodeMap, path, progress);
@@ -712,7 +576,6 @@ export default function Navigation() {
   const destLabel = routerLoc.state?.label || NODE_LABELS[toNode] || toNode || "Destination";
   const isFirst   = !localStorage.getItem("mm_step_len");
 
-  // ── Render ── (UI identical to original; only header badge + dot color changed)
   return (
     <div className="nav-wrapper">
 
@@ -724,7 +587,6 @@ export default function Navigation() {
           </svg>
         </button>
         <span className="nav-header-title">Navigation</span>
-        {/* Header badge: green steps when moving, amber "Stationary" when frozen */}
         {tracking && (
           <span style={{ fontSize: 11, fontWeight: 700,
             color: isStationary ? "#f59e0b" : "#4ade80" }}>
@@ -733,14 +595,6 @@ export default function Navigation() {
         )}
         {!tracking && <div style={{ width: 40 }}/>}
       </div>
-
-      {/* Phase 1B: off-route warning banner */}
-      {offRoute && tracking && (
-        <div className="nav-error-bar"
-          style={{ background: "#451a03", borderColor: "#f59e0b", color: "#fde68a" }}>
-          ↩ Wrong direction — turn to face the path
-        </div>
-      )}
 
       {calibrating && (
         <div className="calib-overlay">
@@ -863,9 +717,7 @@ export default function Navigation() {
               <div className="instruction-icon">{curDir.icon}</div>
               <div className="instruction-text">{curDir.instruction}</div>
               {!tracking
-                ? <button className="start-walk-btn" onClick={() => attachMotion()}>
-                    Start Walking
-                  </button>
+                ? <button className="start-walk-btn" onClick={() => attachMotion()}>Start Walking</button>
                 : <button className="pause-walk-btn" onClick={detachMotion}>Pause</button>
               }
             </div>
@@ -928,7 +780,6 @@ export default function Navigation() {
                 );
               })}
 
-              {/* Position dot — turns amber + freezes when stationary */}
               {animPos && (
                 <g transform={"translate("+animPos[0]+","+animPos[1]+")"}>
                   <circle r="22" fill={isStationary ? "#f59e0b" : "#3b82f6"} opacity="0.12"/>
