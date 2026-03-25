@@ -44,15 +44,7 @@ function Login() {
 
   const handleGoogleLogin = async () => {
     try {
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-    if (isMobile) {
-      // Mobile → use redirect
-      await signInWithRedirect(auth, googleProvider);
-    } else {
-      // Desktop → use popup
       await signInWithPopup(auth, googleProvider);
-    }
     } catch (err) {
       setError(friendlyError(err.code));
     }
