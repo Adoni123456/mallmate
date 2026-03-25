@@ -40,7 +40,7 @@ function Login() {
           console.log("User logged in:", result.user);
 
           // ✅ redirect AFTER successful login
-          navigate("/login");   // change to "/dashboard" if needed
+          navigate("/chat");   // change to "/dashboard" if needed
         }
     })
     .catch((error) => {
