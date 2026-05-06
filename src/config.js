@@ -1,5 +1,5 @@
 const config = {
-  API_URL: "https://pareve-myesha-pseudoscalar.ngrok-free.dev ",
+  API_URL: "https://pareve-myesha-pseudoscalar.ngrok-free.dev",
 };
 export default config;
 //http://localhost:8000
@@ -8,3 +8,5 @@ export default config;
 //Click Open Database
 //C:\Users\adoni\mallmate\backend\mall.db
 //https://.*\.ngrok-free\.app|https://.*\.vercel\.app
+//C:\Users\adoni\Downloads\ngrok-v3-stable-windows-amd64 (2)
+//mallmate.vercel.app
